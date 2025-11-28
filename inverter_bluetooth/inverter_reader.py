@@ -1,10 +1,11 @@
 import logging
 import asyncio
+import time
+import json
 from bleak import BleakClient
 from struct import unpack
 import paho.mqtt.client as mqtt
-import time
-import json
+from paho.mqtt.client import CallbackAPIVersion
 
 BASE_MQTT_TOPIC = "solar_inverter"
 DISCOVERY_PREFIX = "homeassistant"
