@@ -38,9 +38,10 @@ sensors = [
     {"name": "Solar Power", "unit": "W", "unique_id": "solar_wt", "device_class": "power"},
 ]
 
-def on_connect(client, userdata, flags, rc):
-    if rc==0:
-        log.info("MQTT connected ok")
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code.is_failure:
+        # reason_code is a ConnectReasonCode object with human-readable error info
+        log.error(f"MQTT connection failed: {reason_code}")
     else:
         log.info(f"Connection failed with code {rc}")
 
