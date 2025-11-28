@@ -3,7 +3,7 @@ import asyncio
 import os
 import json
 import time
-from bleak import BleakClient, discover
+from bleak import BleakClient, BleakScanner # <-- UPDATED: Changed 'discover' to 'BleakScanner'
 from struct import unpack
 import paho.mqtt.client as mqtt
 
@@ -84,7 +84,8 @@ async def scan_devices():
     log.info("This scan will take about 10 seconds. Please ensure your inverter is on.")
 
     try:
-        devices = await discover(timeout=10.0)
+        # UPDATED: Use BleakScanner.discover() instead of discover()
+        devices = await BleakScanner.discover(timeout=10.0)
 
         log.info("--- Discovered Bluetooth Devices ---")
         if not devices:

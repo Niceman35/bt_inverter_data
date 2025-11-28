@@ -1,5 +1,5 @@
 name: "Solar Inverter Bluetooth Reader"
-version: "0.1.3"
+version: "0.1.4"
 slug: "inverter_bluetooth"
 description: "Reads solar inverter data via Bluetooth and publishes to Home Assistant via MQTT."
 arch:
