@@ -197,7 +197,8 @@ async def get_data(address):
             # --- START: New comprehensive logging of all characteristics ---
             log.info("--- Start Full Characteristic Dump ---")
             for char_uuid, characteristic in client.services.characteristics.items():
-                log.info(f"  HANDLE: {characteristic.handle:<4} | UUID: {char_uuid} | Properties: {characteristic.properties_translated}")
+                # FIXED: Changed properties_translated to properties for compatibility
+                log.info(f"  HANDLE: {characteristic.handle:<4} | UUID: {char_uuid} | Properties: {characteristic.properties}")
             log.info("--- End Full Characteristic Dump ---")
             # --- END: New comprehensive logging of all characteristics ---
 
