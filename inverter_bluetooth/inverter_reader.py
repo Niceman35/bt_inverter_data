@@ -47,11 +47,13 @@ sensors = [
     {"name": "Solar Power", "unit": "W", "unique_id": "solar_wt", "device_class": "power"},
 ]
 
-def on_connect(client, userdata, flags, rc):
-    if rc==0:
-        log.info("MQTT connected successfully.")
+# UPDATED: Changed signature for V2 API to include reason_code and properties
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code.is_failure:
+        # reason_code is a ConnectReasonCode object with human-readable error info
+        log.error(f"MQTT connection failed: {reason_code}")
     else:
-        log.error(f"MQTT connection failed with code {rc}.")
+        log.info("MQTT connected successfully.")
 
 def send_mqtt_discovery(client):
     log.info("Sending Home Assistant MQTT discovery messages...")
@@ -85,7 +87,6 @@ async def scan_devices():
     log.info("This scan will take about 10 seconds. Please ensure your inverter is on.")
 
     try:
-        # UPDATED: Use BleakScanner.discover() instead of discover()
         devices = await BleakScanner.discover(timeout=10.0)
 
         log.info("--- Discovered Bluetooth Devices ---")
@@ -148,6 +149,7 @@ async def main():
                 last_discovery_time = current_time
 
         except Exception as e:
+            # We catch the error here and retry after the sleep.
             log.error(f"An error occurred during data collection/publishing: {e}. Retrying in 30 seconds...")
 
         await asyncio.sleep(30)
@@ -160,7 +162,8 @@ async def get_data(address):
     data = {}
 
     try:
-        async with BleakClient(address) as client:
+        # UPDATED: Added use_bdaddr=True for potential stability improvement
+        async with BleakClient(address, use_bdaddr=True) as client:
             if not client.is_connected:
                 log.error("Failed to connect to Bluetooth device.")
                 raise ConnectionError("Bluetooth connection failed.")
