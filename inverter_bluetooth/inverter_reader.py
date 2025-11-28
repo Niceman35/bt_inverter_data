@@ -1,8 +1,9 @@
 import logging
 import asyncio
-import time
+import os
 import json
-from bleak import BleakClient
+import time
+from bleak import BleakClient, BleakScanner
 from struct import unpack
 import paho.mqtt.client as mqtt
 from paho.mqtt.client import CallbackAPIVersion
@@ -10,8 +11,24 @@ from paho.mqtt.client import CallbackAPIVersion
 BASE_MQTT_TOPIC = "solar_inverter"
 DISCOVERY_PREFIX = "homeassistant"
 
-logging.basicConfig(level=logging.INFO)
+# Set up logging for the add-on logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
+
+# --- Configuration from Environment (Mandatory) ---
+INVERTER_ADDRESS = os.environ.get("INVERTER_ADDRESS")
+MQTT_HOST = os.environ.get("MQTT_HOST")
+MQTT_USER = os.environ.get("MQTT_USER")
+MQTT_PASS = os.environ.get("MQTT_PASS")
+
+# Optional characteristic handles for non-standard devices
+HANDLE_2A03 = os.environ.get("HANDLE_2A03")
+HANDLE_2A04 = os.environ.get("HANDLE_2A04")
+HANDLE_2A11 = os.environ.get("HANDLE_2A11")
+
+# NEW: Enable diagnostic mode to dump all characteristic data
+DIAGNOSTIC_MODE = true
+# --------------------------------------------------
 
 
 sensors = [
@@ -38,20 +55,23 @@ sensors = [
     {"name": "Solar Power", "unit": "W", "unique_id": "solar_wt", "device_class": "power"},
 ]
 
+# Map short UUID keys to full UUID and configuration environment variable
+CHARACTERISTIC_MAP = {
+    '2a03': {'uuid': '00002a03-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A03, 'handle': None, 'name': 'General Status'},
+    '2a04': {'uuid': '00002a04-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A04, 'handle': None, 'name': 'Battery & Temp'},
+    '2a11': {'uuid': '00002a11-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A11, 'handle': None, 'name': 'Solar/MPPT'},
+}
+
+# UPDATED: Changed signature for V2 API to include reason_code and properties
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code.is_failure:
         # reason_code is a ConnectReasonCode object with human-readable error info
         log.error(f"MQTT connection failed: {reason_code}")
     else:
-        log.info(f"Connection failed with code {rc}")
+        log.info("MQTT connected successfully.")
 
-client = mqtt.Client(
-    client_id="SolarInv",
-    callback_api_version=CallbackAPIVersion.VERSION2
-)
-client.on_connect=on_connect
-
-def send_mqtt_discovery():
+def send_mqtt_discovery(client):
+    log.info("Sending Home Assistant MQTT discovery messages...")
     for sensor in sensors:
         config_topic = f"{DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
         state_topic = f"{BASE_MQTT_TOPIC}/{sensor['unique_id']}/state"
@@ -73,84 +93,285 @@ def send_mqtt_discovery():
             payload["dev_cla"] = device_class
             payload["stat_cla"] = "measurement"
 
-        log.info(json.dumps(payload))
         client.publish(config_topic, json.dumps(payload), retain=True)
+    log.info("MQTT discovery messages sent.")
+
+async def scan_devices():
+    """Scans for available Bluetooth devices and prints their addresses."""
+    log.info("INVERTER_ADDRESS is not configured. Starting Bluetooth device scan...")
+    log.info("This scan will take about 10 seconds. Please ensure your inverter is on.")
+
+    try:
+        devices = await BleakScanner.discover(timeout=10.0)
+
+        log.info("--- Discovered Bluetooth Devices ---")
+        if not devices:
+            log.info("No Bluetooth devices found. Check if Bluetooth is enabled and the inverter is in range.")
+        else:
+            for i, device in enumerate(devices):
+                # FIXED: Safely access RSSI using getattr with a fallback
+                rssi = getattr(device, 'rssi', 'N/A')
+                log.info(f"[{i+1}] Address: {device.address}, Name: {device.name if device.name else 'N/A'}, RSSI: {rssi}")
+                # ADDED: Print the full object representation for detailed debugging
+                log.info(f"      ---> Full Device Object (Debug): {repr(device)}")
+
+        log.info("------------------------------------")
+        log.info("ACTION REQUIRED: Copy the correct inverter MAC address and paste it into the add-on configuration, then restart the add-on.")
+    except Exception as e:
+        # Catch and log the specific error
+        log.error(f"Failed to perform Bluetooth scan: {e}")
+
+async def run_diagnostic_dump(address):
+    """Connects to the device and attempts to read all characteristics with the 'read' property."""
+    log.info("--- Starting DIAGNOSTIC MODE: Attempting to read all readable characteristics ---")
+    try:
+        async with BleakClient(address, use_bdaddr=True) as client:
+            if not client.is_connected:
+                log.error("Failed to connect for diagnostic dump.")
+                return
+
+            log.info("Successfully connected for diagnostic dump.")
+
+            characteristics = client.services.characteristics
+
+            log.info("--- Characteristic Read Dump ---")
+
+            results = []
+
+            for char_uuid, characteristic in characteristics.items():
+                handle = characteristic.handle
+                properties = characteristic.properties
+
+                if 'read' in properties:
+                    log.info(f"Attempting to read from HANDLE: {handle} | UUID: {char_uuid} | Properties: {properties}")
+                    try:
+                        # Wait for a brief moment before reading, sometimes helps stability
+                        await asyncio.sleep(0.01)
+                        value = await client.read_gatt_char(handle)
+                        hex_value = value.hex()
+                        length = len(value)
+
+                        results.append(f"  ✅ SUCCESS | HANDLE: {handle:<4} | UUID: {char_uuid} | Length: {length:<3} bytes | Value (Hex): {hex_value}")
+                    except Exception as e:
+                        results.append(f"  ❌ FAILED  | HANDLE: {handle:<4} | UUID: {char_uuid} | Error: {e}")
+                else:
+                    results.append(f"  ⏭️ SKIPPED | HANDLE: {handle:<4} | UUID: {char_uuid} | Properties: {properties} (No 'read' property)")
+
+            log.info("--- FINAL DIAGNOSTIC READ RESULTS ---")
+            for result in results:
+                log.info(result)
+            log.info("-------------------------------------")
+            log.info("Diagnostic Mode Complete. Check the logs for data. The script will now wait 30 seconds to retry.")
+
+    except Exception as e:
+        log.error(f"Error during diagnostic dump: {e}")
+
 
 async def main():
+    # 1. Configuration Check
+    if not INVERTER_ADDRESS:
+        await scan_devices()
+        log.warning("Inverter address missing. Exiting script after diagnostic scan.")
+        return
+
+    # 1.5 Diagnostic Check: If enabled, run the dump instead of the MQTT loop
+    if DIAGNOSTIC_MODE:
+        log.warning("DIAGNOSTIC_MODE is ENABLED. The script will only attempt to read all characteristics and will NOT publish data to MQTT.")
+        while True:
+            try:
+                await run_diagnostic_dump(INVERTER_ADDRESS)
+            except Exception as e:
+                log.error(f"Error in diagnostic mode loop: {e}. Retrying in 30 seconds...")
+            await asyncio.sleep(30)
+        return
+
+    # Standard MQTT operation proceeds below
+    if not all([MQTT_HOST, MQTT_USER, MQTT_PASS]):
+        log.error("MQTT configuration variables (MQTT_HOST, MQTT_USER, MQTT_PASS) are missing. Exiting.")
+        exit(1)
+
+    # 2. MQTT Setup
     last_discovery_time = 0
+    # UPDATED: Added callback_api_version=CallbackAPIVersion.VERSION2
+    client = mqtt.Client(
+        client_id="SolarInv",
+        callback_api_version=CallbackAPIVersion.VERSION2
+    )
+    client.on_connect = on_connect
 
-    client.username_pw_set("mqtt", "Jasanova366")
-    client.connect("homeassistant.local")
-    client.loop_start()
+    try:
+        client.username_pw_set(MQTT_USER, MQTT_PASS)
+        client.connect(MQTT_HOST)
+        client.loop_start()
+    except Exception as e:
+        log.error(f"Failed to connect to MQTT broker at {MQTT_HOST}: {e}. Exiting.")
+        exit(1)
 
+    # 3. Main Loop
     while True:
-        # Your data extraction logic
         try:
-            data = await get_data("50:51:A9:78:59:8C")
+            log.info(f"Attempting to read data from inverter at {INVERTER_ADDRESS}...")
+            data = await get_data(INVERTER_ADDRESS)
+
+            # --- DEBUGGING OUTPUT ADDED HERE ---
+            log.info(f"Collected Data: {data}")
+            # -----------------------------------
 
             for sensor in sensors:
                 unique_id = sensor["unique_id"]
                 if unique_id in data:
-                    client.publish(f"{BASE_MQTT_TOPIC}/{unique_id}/state", data[unique_id])
+                    client.publish(f"{BASE_MQTT_TOPIC}/{unique_id}/state", data[unique_id], retain=False)
+
+            log.info("Data published successfully. Waiting for 30 seconds.")
 
             current_time = time.time()
+            # Send discovery every 30 minutes (1800 seconds)
             if current_time - last_discovery_time >= 1800:
-                send_mqtt_discovery()
+                send_mqtt_discovery(client)
                 last_discovery_time = current_time
 
-        except Exception as e:  # This will catch all exceptions
-            log.error(f"An error occurred: {e}. Retrying in 30 seconds...")
+        except Exception as e:
+            # We catch the error here and retry after the sleep.
+            log.error(f"An error occurred during data collection/publishing: {e}. Retrying in 30 seconds...")
 
         await asyncio.sleep(30)
 
 async def get_data(address):
     def checkBit(numb, bitnum):
-        if numb & (1 << bitnum):
-            return "1"
-        else:
-            return "0"
+        # Convert integer to string "1" or "0" based on bit status
+        return "1" if numb & (1 << bitnum) else "0"
+
+    # Make a mutable copy of the map for this call
+    char_handles = CHARACTERISTIC_MAP.copy()
 
     data = {}
 
-    async with BleakClient(address) as client:
-        value = bytes(await client.read_gatt_char('00002a03-0000-1000-8000-00805f9b34fb'))
-        log.info("\tValue: {0} ".format(value.hex(' ')))
-        valueArr = unpack('<hhhhhhhhhh', value)
-        batteryVolts = valueArr[8]/100
-        data['ac_in_v'] = valueArr[0]/10
-        data['ac_in_hz'] = valueArr[1]/10
-        data['ac_out_v'] = valueArr[2]/10
-        data['ac_out_hz'] = valueArr[3]/10
-        data['power_va'] = valueArr[4]
-        data['power_wt'] = valueArr[5]
-        data['power_load'] = valueArr[6]
-        data['mainbus_v'] = valueArr[7]
-        data['battery_v'] = batteryVolts
-        data['bat_charge_a'] = valueArr[9]
-        data['bat_charge_wt'] = valueArr[9]*batteryVolts
+    try:
+        # Added use_bdaddr=True for potential stability improvement
+        async with BleakClient(address, use_bdaddr=True) as client:
+            if not client.is_connected:
+                log.error("Failed to connect to Bluetooth device.")
+                raise ConnectionError("Bluetooth connection failed.")
 
-        value = bytes(await client.read_gatt_char('00002a04-0000-1000-8000-00805f9b34fb'))
-        log.info("\tValue: {0} ".format(value.hex(' ')))
-        valueArr = unpack('<hhhhhhhhhh', value)
-        data['bat_charge_perc'] = valueArr[0]
-        data['int_term_c'] = valueArr[1]
-        data['bat_discharge_a'] = valueArr[2]
-        data['bat_discharge_wt'] = valueArr[2]*batteryVolts
-        data['status_charge_ac'] = checkBit(valueArr[3], 0)
-        data['status_charge_solar'] = checkBit(valueArr[3], 1)
-        data['status_charge'] = checkBit(valueArr[3], 2)
+            log.info("Successfully connected.")
 
-        value = bytes(await client.read_gatt_char('00002a11-0000-1000-8000-00805f9b34fb'))
-        log.info("\tValue: {0} ".format(value.hex(' ')))
-        valueArr = unpack('<hhhhhhhhhh', value)
-        data['solar_a'] = valueArr[5]/10
-        data['solar_v'] = valueArr[6]/10
-        data['solar_wt'] = valueArr[7]
+            # --- START: New comprehensive logging of all characteristics ---
+            log.info("--- Start Full Characteristic Dump ---")
+            for char_uuid, characteristic in client.services.characteristics.items():
+                # FIXED: Changed properties_translated to properties for compatibility
+                log.info(f"  HANDLE: {characteristic.handle:<4} | UUID: {char_uuid} | Properties: {characteristic.properties}")
+            log.info("--- End Full Characteristic Dump ---")
+            # --- END: New comprehensive logging of all characteristics ---
 
-    log.info(json.dumps(data))
-    return data
+            log.info("Discovering required characteristic handles (2a03, 2a04, 2a11)...")
+
+            # --- Handle Discovery and Mapping ---
+            # 1. First, check if environment handles are set
+            all_handles_set = all(c['env_handle'] for c in char_handles.values())
+
+            if not all_handles_set:
+                # 2. If not all handles are set, iterate through all discovered characteristics
+                for char_uuid, characteristic in client.services.characteristics.items():
+
+                    # FIX: Handle cases where the UUID key might be an integer (handle) instead of a UUID string
+                    if not isinstance(char_uuid, str):
+                        # UPDATED: Made this warning more actionable for the user
+                        log.warning(f"Skipping characteristic with non-string UUID (Handle: {characteristic.handle}, UUID: {char_uuid}). If this handle corresponds to a required data point, please set the appropriate HANDLE_2AXX environment variable to '{characteristic.handle}'.")
+                        continue
+
+                    # Get the 4-digit short UUID (e.g., '2a03')
+                    short_uuid = char_uuid.split('-')[0][-4:]
+
+                    if short_uuid in char_handles:
+                        char_info = char_handles[short_uuid]
+
+                        # Use the handle from the environment variable if provided
+                        if char_info['env_handle'] is not None and char_info['handle'] is None:
+                            try:
+                                char_info['handle'] = int(char_info['env_handle'])
+                                log.info(f"Using configured handle {char_info['handle']} for {short_uuid} ({char_info['name']}).")
+                            except ValueError:
+                                log.error(f"Invalid integer handle provided for HANDLE_{short_uuid.upper()}. Falling back to dynamic lookup.")
+
+                        # If no valid env handle is provided and we haven't found one yet, use this one
+                        elif char_info['handle'] is None:
+                            char_info['handle'] = characteristic.handle
+                            log.warning(f"Dynamically selecting handle {char_info['handle']} for {short_uuid} ({char_info['name']}). If data is incorrect, set HANDLE_{short_uuid.upper()} in environment.")
+
+                        elif char_info['handle'] != characteristic.handle:
+                            # Log any other occurrences of this UUID for debugging purposes
+                            log.warning(f"Found duplicate characteristic UUID {short_uuid} with handle {characteristic.handle}. **Ignoring this duplicate.**")
+
+            # Final check that all required handles were found (either by env or dynamically)
+            for short_uuid, char_info in char_handles.items():
+                if char_info['handle'] is None:
+                    # Should only happen if device didn't list the characteristic
+                    log.error(f"Failed to resolve handle for required characteristic UUID {char_info['uuid']} ({char_info['name']}). This means the required 2AXX characteristics were not found or not configured. You must manually set HANDLE_{short_uuid.upper()} environment variable to the correct integer handle from the characteristic dump above.")
+                    raise RuntimeError("Missing required characteristic handles.")
+
+            log.info("All required handles successfully resolved.")
+
+            # --- Read data using the discovered/configured handles ---
+
+            # Read first characteristic (General Status)
+            handle_2a03 = char_handles['2a03']['handle']
+            log.info(f"Reading General Status (2a03) from handle {handle_2a03}...")
+            value = bytes(await client.read_gatt_char(handle_2a03))
+
+            # Assuming 'h' is signed short (2 bytes), 10 values = 20 bytes total
+            if len(value) < 20:
+                raise ValueError(f"Incomplete data received for General Status (2a03). Expected 20 bytes, got {len(value)}.")
+
+            valueArr = unpack('<hhhhhhhhhh', value)
+
+            batteryVolts = valueArr[8]/100
+            data['ac_in_v'] = valueArr[0]/10
+            data['ac_in_hz'] = valueArr[1]/10
+            data['ac_out_v'] = valueArr[2]/10
+            data['ac_out_hz'] = valueArr[3]/10
+            data['power_va'] = valueArr[4]
+            data['power_wt'] = valueArr[5]
+            data['power_load'] = valueArr[6]
+            data['mainbus_v'] = valueArr[7]
+            data['battery_v'] = batteryVolts
+            data['bat_charge_a'] = valueArr[9]
+            data['bat_charge_wt'] = valueArr[9]*batteryVolts
+
+            # Read second characteristic (Battery & Temperature)
+            handle_2a04 = char_handles['2a04']['handle']
+            log.info(f"Reading Battery & Temp (2a04) from handle {handle_2a04}...")
+            value = bytes(await client.read_gatt_char(handle_2a04))
+            if len(value) < 20:
+                raise ValueError(f"Incomplete data received for Battery & Temperature (2a04). Expected 20 bytes, got {len(value)}.")
+
+            valueArr = unpack('<hhhhhhhhhh', value)
+            data['bat_charge_perc'] = valueArr[0]
+            data['int_term_c'] = valueArr[1]
+            data['bat_discharge_a'] = valueArr[2]
+            data['bat_discharge_wt'] = valueArr[2]*batteryVolts
+            data['status_charge_ac'] = checkBit(valueArr[3], 0)
+            data['status_charge_solar'] = checkBit(valueArr[3], 1)
+            data['status_charge'] = checkBit(valueArr[3], 2)
+
+            # Read third characteristic (Solar/MPPT)
+            handle_2a11 = char_handles['2a11']['handle']
+            log.info(f"Reading Solar/MPPT (2a11) from handle {handle_2a11}...")
+            value = bytes(await client.read_gatt_char(handle_2a11))
+            if len(value) < 20:
+                raise ValueError(f"Incomplete data received for Solar/MPPT (2a11). Expected 20 bytes, got {len(value)}.")
+
+            valueArr = unpack('<hhhhhhhhhh', value)
+            data['solar_a'] = valueArr[5]/10
+            data['solar_v'] = valueArr[6]/10
+            data['solar_wt'] = valueArr[7]
+
+        return data
+
+    except Exception as e:
+        log.error(f"Error reading from Bluetooth device: {e}")
+        # Re-raise the exception to be caught by the main loop for retry/logging
+        raise
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-
