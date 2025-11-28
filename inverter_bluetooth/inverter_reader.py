@@ -154,7 +154,7 @@ async def main():
         log.warning("Inverter address missing. Exiting script after diagnostic scan.")
         return
 
-    if True:
+    if False:
         log.warning("DIAGNOSTIC_MODE is ENABLED. The script will only attempt to read all characteristics and will NOT publish data to MQTT.")
         while True:
             try:
@@ -228,13 +228,12 @@ async def get_data(address):
             log.info("Successfully connected.")
 
             # Hardcoded integer handles found via diagnostic mode for this inverter model
-            handle_2a03 = 55
-            handle_2a04 = 52
-            handle_2a11 = 58
-            log.info(f"Using hardcoded handles: 2A03={handle_2a03}, 2A04={handle_2a04}, 2A11={handle_2a11}")
+            handle_2a03 = 28
+            handle_2a04 = 31
+            handle_2a11 = 62
 
             # --- Read first characteristic (General Status, Handle 55) ---
-            log.info(f"Reading General Status (2a03) from handle {handle_2a03}...")
+            log.info(f"Reading General Status from handle {handle_2a03}...")
             value = bytes(await client.read_gatt_char(handle_2a03))
 
             # Assuming 'h' is signed short (2 bytes), 10 values = 20 bytes total
@@ -257,7 +256,7 @@ async def get_data(address):
             data['bat_charge_wt'] = valueArr[9]*batteryVolts
 
             # --- Read second characteristic (Battery & Temperature, Handle 52) ---
-            log.info(f"Reading Battery & Temp (2a04) from handle {handle_2a04}...")
+            log.info(f"Reading Battery & Temp from handle {handle_2a04}...")
             value = bytes(await client.read_gatt_char(handle_2a04))
             if len(value) < 20:
                 raise ValueError(f"Incomplete data received for Battery & Temperature (2a04). Expected 20 bytes, got {len(value)}.")
@@ -272,7 +271,7 @@ async def get_data(address):
             data['status_charge'] = checkBit(valueArr[3], 2)
 
             # --- Read third characteristic (Solar/MPPT, Handle 58) ---
-            log.info(f"Reading Solar/MPPT (2a11) from handle {handle_2a11}...")
+            log.info(f"Reading Solar/MPPT from handle {handle_2a11}...")
             value = bytes(await client.read_gatt_char(handle_2a11))
             if len(value) < 20:
                 raise ValueError(f"Incomplete data received for Solar/MPPT (2a11). Expected 20 bytes, got {len(value)}.")
