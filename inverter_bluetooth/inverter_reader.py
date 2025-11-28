@@ -20,6 +20,11 @@ INVERTER_ADDRESS = os.environ.get("INVERTER_ADDRESS")
 MQTT_HOST = os.environ.get("MQTT_HOST")
 MQTT_USER = os.environ.get("MQTT_USER")
 MQTT_PASS = os.environ.get("MQTT_PASS")
+# Added optional characteristic handles to fix "Multiple Characteristics" error
+# If set, these integer handles will be used instead of UUID lookup.
+HANDLE_2A03 = os.environ.get("HANDLE_2A03")
+HANDLE_2A04 = os.environ.get("HANDLE_2A04")
+HANDLE_2A11 = os.environ.get("HANDLE_2A11")
 # --------------------------------------------------
 
 
@@ -46,6 +51,13 @@ sensors = [
     {"name": "Solar Voltage", "unit": "V", "unique_id": "solar_v", "device_class": "voltage"},
     {"name": "Solar Power", "unit": "W", "unique_id": "solar_wt", "device_class": "power"},
 ]
+
+# Map short UUID keys to full UUID and configuration environment variable
+CHARACTERISTIC_MAP = {
+    '2a03': {'uuid': '00002a03-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A03, 'handle': None, 'name': 'General Status'},
+    '2a04': {'uuid': '00002a04-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A04, 'handle': None, 'name': 'Battery & Temp'},
+    '2a11': {'uuid': '00002a11-0000-1000-8000-00805f9b34fb', 'env_handle': HANDLE_2A11, 'handle': None, 'name': 'Solar/MPPT'},
+}
 
 # UPDATED: Changed signature for V2 API to include reason_code and properties
 def on_connect(client, userdata, flags, reason_code, properties):
@@ -168,6 +180,9 @@ async def get_data(address):
         # Convert integer to string "1" or "0" based on bit status
         return "1" if numb & (1 << bitnum) else "0"
 
+    # Make a mutable copy of the map for this call
+    char_handles = CHARACTERISTIC_MAP.copy()
+
     data = {}
 
     try:
@@ -177,13 +192,66 @@ async def get_data(address):
                 log.error("Failed to connect to Bluetooth device.")
                 raise ConnectionError("Bluetooth connection failed.")
 
-            # Read first characteristic (e.g., General Status)
-            value = bytes(await client.read_gatt_char('00002a03-0000-1000-8000-00805f9b34fb'))
-            # valueArr = unpack('<hhhhhhhhhh', value) # Your original unpack format
+            log.info("Successfully connected.")
+
+            # --- START: New comprehensive logging of all characteristics ---
+            log.info("--- Start Full Characteristic Dump ---")
+            for char_uuid, characteristic in client.services.characteristics.items():
+                log.info(f"  HANDLE: {characteristic.handle:<4} | UUID: {char_uuid} | Properties: {characteristic.properties_translated}")
+            log.info("--- End Full Characteristic Dump ---")
+            # --- END: New comprehensive logging of all characteristics ---
+
+            log.info("Discovering required characteristic handles (2a03, 2a04, 2a11)...")
+
+            # --- Handle Discovery and Mapping ---
+            # 1. First, check if environment handles are set
+            all_handles_set = all(c['env_handle'] for c in char_handles.values())
+
+            if not all_handles_set:
+                # 2. If not all handles are set, iterate through all discovered characteristics
+                for char_uuid, characteristic in client.services.characteristics.items():
+                    # Get the 4-digit short UUID (e.g., '2a03')
+                    short_uuid = char_uuid.split('-')[0][-4:]
+
+                    if short_uuid in char_handles:
+                        char_info = char_handles[short_uuid]
+
+                        # Use the handle from the environment variable if provided
+                        if char_info['env_handle'] is not None and char_info['handle'] is None:
+                            try:
+                                char_info['handle'] = int(char_info['env_handle'])
+                                log.info(f"Using configured handle {char_info['handle']} for {short_uuid} ({char_info['name']}).")
+                            except ValueError:
+                                log.error(f"Invalid integer handle provided for HANDLE_{short_uuid.upper()}. Falling back to dynamic lookup.")
+
+                        # If no valid env handle is provided and we haven't found one yet, use this one
+                        elif char_info['handle'] is None:
+                            char_info['handle'] = characteristic.handle
+                            log.warning(f"Dynamically selecting handle {char_info['handle']} for {short_uuid} ({char_info['name']}). If data is incorrect, set HANDLE_{short_uuid.upper()} in environment.")
+
+                        elif char_info['handle'] != characteristic.handle:
+                            # Log any other occurrences of this UUID for debugging purposes
+                            log.warning(f"Found duplicate characteristic UUID {short_uuid} with handle {characteristic.handle}. **Ignoring this duplicate.**")
+
+            # Final check that all required handles were found (either by env or dynamically)
+            for short_uuid, char_info in char_handles.items():
+                if char_info['handle'] is None:
+                    # Should only happen if device didn't list the characteristic
+                    log.error(f"Failed to resolve handle for required characteristic UUID {char_info['uuid']} ({char_info['name']}). Please check connection and configuration.")
+                    raise RuntimeError("Missing required characteristic handles.")
+
+            log.info("All required handles successfully resolved.")
+
+            # --- Read data using the discovered/configured handles ---
+
+            # Read first characteristic (General Status)
+            handle_2a03 = char_handles['2a03']['handle']
+            log.info(f"Reading General Status (2a03) from handle {handle_2a03}...")
+            value = bytes(await client.read_gatt_char(handle_2a03))
 
             # Assuming 'h' is signed short (2 bytes), 10 values = 20 bytes total
             if len(value) < 20:
-                raise ValueError("Incomplete data received for characteristic 2a03.")
+                raise ValueError(f"Incomplete data received for General Status (2a03). Expected 20 bytes, got {len(value)}.")
 
             valueArr = unpack('<hhhhhhhhhh', value)
 
@@ -200,10 +268,12 @@ async def get_data(address):
             data['bat_charge_a'] = valueArr[9]
             data['bat_charge_wt'] = valueArr[9]*batteryVolts
 
-            # Read second characteristic (e.g., Battery & Temperature)
-            value = bytes(await client.read_gatt_char('00002a04-0000-1000-8000-00805f9b34fb'))
+            # Read second characteristic (Battery & Temperature)
+            handle_2a04 = char_handles['2a04']['handle']
+            log.info(f"Reading Battery & Temp (2a04) from handle {handle_2a04}...")
+            value = bytes(await client.read_gatt_char(handle_2a04))
             if len(value) < 20:
-                raise ValueError("Incomplete data received for characteristic 2a04.")
+                raise ValueError(f"Incomplete data received for Battery & Temperature (2a04). Expected 20 bytes, got {len(value)}.")
 
             valueArr = unpack('<hhhhhhhhhh', value)
             data['bat_charge_perc'] = valueArr[0]
@@ -214,10 +284,12 @@ async def get_data(address):
             data['status_charge_solar'] = checkBit(valueArr[3], 1)
             data['status_charge'] = checkBit(valueArr[3], 2)
 
-            # Read third characteristic (e.g., Solar/MPPT)
-            value = bytes(await client.read_gatt_char('00002a11-0000-1000-8000-00805f9b34fb'))
+            # Read third characteristic (Solar/MPPT)
+            handle_2a11 = char_handles['2a11']['handle']
+            log.info(f"Reading Solar/MPPT (2a11) from handle {handle_2a11}...")
+            value = bytes(await client.read_gatt_char(handle_2a11))
             if len(value) < 20:
-                raise ValueError("Incomplete data received for characteristic 2a11.")
+                raise ValueError(f"Incomplete data received for Solar/MPPT (2a11). Expected 20 bytes, got {len(value)}.")
 
             valueArr = unpack('<hhhhhhhhhh', value)
             data['solar_a'] = valueArr[5]/10
