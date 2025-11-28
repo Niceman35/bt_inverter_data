@@ -6,7 +6,7 @@ import time
 from bleak import BleakClient, BleakScanner
 from struct import unpack
 import paho.mqtt.client as mqtt
-from paho.mqtt.client import CallbackAPIVersion # <--- NEW IMPORT
+from paho.mqtt.client import CallbackAPIVersion
 
 BASE_MQTT_TOPIC = "solar_inverter"
 DISCOVERY_PREFIX = "homeassistant"
@@ -94,11 +94,16 @@ async def scan_devices():
             log.info("No Bluetooth devices found. Check if Bluetooth is enabled and the inverter is in range.")
         else:
             for i, device in enumerate(devices):
-                log.info(f"[{i+1}] Address: {device.address}, Name: {device.name if device.name else 'N/A'}, RSSI: {device.rssi}")
+                # FIXED: Safely access RSSI using getattr with a fallback
+                rssi = getattr(device, 'rssi', 'N/A')
+                log.info(f"[{i+1}] Address: {device.address}, Name: {device.name if device.name else 'N/A'}, RSSI: {rssi}")
+                # ADDED: Print the full object representation for detailed debugging
+                log.info(f"      ---> Full Device Object (Debug): {repr(device)}")
 
         log.info("------------------------------------")
         log.info("ACTION REQUIRED: Copy the correct inverter MAC address and paste it into the add-on configuration, then restart the add-on.")
     except Exception as e:
+        # Catch and log the specific error
         log.error(f"Failed to perform Bluetooth scan: {e}")
 
 async def main():
@@ -135,6 +140,10 @@ async def main():
             log.info(f"Attempting to read data from inverter at {INVERTER_ADDRESS}...")
             data = await get_data(INVERTER_ADDRESS)
 
+            # --- DEBUGGING OUTPUT ADDED HERE ---
+            log.info(f"Collected Data: {data}")
+            # -----------------------------------
+
             for sensor in sensors:
                 unique_id = sensor["unique_id"]
                 if unique_id in data:
@@ -162,7 +171,7 @@ async def get_data(address):
     data = {}
 
     try:
-        # UPDATED: Added use_bdaddr=True for potential stability improvement
+        # Added use_bdaddr=True for potential stability improvement
         async with BleakClient(address, use_bdaddr=True) as client:
             if not client.is_connected:
                 log.error("Failed to connect to Bluetooth device.")
