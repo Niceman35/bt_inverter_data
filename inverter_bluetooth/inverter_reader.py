@@ -27,7 +27,7 @@ HANDLE_2A04 = os.environ.get("HANDLE_2A04")
 HANDLE_2A11 = os.environ.get("HANDLE_2A11")
 
 # NEW: Enable diagnostic mode to dump all characteristic data
-DIAGNOSTIC_MODE = true
+DIAGNOSTIC_MODE = True
 # --------------------------------------------------
 
 
