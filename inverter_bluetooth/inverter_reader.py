@@ -43,7 +43,10 @@ def on_connect(client, userdata, flags, rc):
     else:
         log.info(f"Connection failed with code {rc}")
 
-client = mqtt.Client("SolarInv")
+client = mqtt.Client(
+    client_id="SolarInv",
+    callback_api_version=CallbackAPIVersion.VERSION2
+)
 client.on_connect=on_connect
 
 def send_mqtt_discovery():
