@@ -101,11 +101,67 @@ async def scan_devices():
     except Exception as e:
         log.error(f"Failed to perform Bluetooth scan: {e}")
 
+async def run_diagnostic_dump(address):
+    """Connects to the device and attempts to read all characteristics with the 'read' property."""
+    log.info("--- Starting DIAGNOSTIC MODE: Attempting to read all readable characteristics ---")
+    try:
+        async with BleakClient(address, use_bdaddr=True) as client:
+            if not client.is_connected:
+                log.error("Failed to connect for diagnostic dump.")
+                return
+
+            log.info("Successfully connected for diagnostic dump.")
+
+            characteristics = client.services.characteristics
+
+            log.info("--- Characteristic Read Dump ---")
+
+            results = []
+
+            for char_uuid, characteristic in characteristics.items():
+                handle = characteristic.handle
+                properties = characteristic.properties
+
+                if 'read' in properties:
+                    log.info(f"Attempting to read from HANDLE: {handle} | UUID: {char_uuid} | Properties: {properties}")
+                    try:
+                        # Wait for a brief moment before reading, sometimes helps stability
+                        await asyncio.sleep(0.01)
+                        value = await client.read_gatt_char(handle)
+                        hex_value = value.hex()
+                        length = len(value)
+
+                        results.append(f"  ✅ SUCCESS | HANDLE: {handle:<4} | UUID: {char_uuid} | Length: {length:<3} bytes | Value (Hex): {hex_value}")
+                    except Exception as e:
+                        results.append(f"  ❌ FAILED  | HANDLE: {handle:<4} | UUID: {char_uuid} | Error: {e}")
+                else:
+                    results.append(f"  ⏭️ SKIPPED | HANDLE: {handle:<4} | UUID: {char_uuid} | Properties: {properties} (No 'read' property)")
+
+            log.info("--- FINAL DIAGNOSTIC READ RESULTS ---")
+            for result in results:
+                log.info(result)
+            log.info("-------------------------------------")
+            log.info("Diagnostic Mode Complete. Check the logs for data. The script will now wait 30 seconds to retry.")
+
+    except Exception as e:
+        log.error(f"Error during diagnostic dump: {e}")
+
+
 async def main():
     # 1. Configuration Check
     if not INVERTER_ADDRESS:
         await scan_devices() # scan_devices reinstated here
         log.warning("Inverter address missing. Exiting script after diagnostic scan.")
+        return
+
+    if True:
+        log.warning("DIAGNOSTIC_MODE is ENABLED. The script will only attempt to read all characteristics and will NOT publish data to MQTT.")
+        while True:
+            try:
+                await run_diagnostic_dump(INVERTER_ADDRESS)
+            except Exception as e:
+                log.error(f"Error in diagnostic mode loop: {e}. Retrying in 30 seconds...")
+            await asyncio.sleep(30)
         return
 
     if not all([MQTT_HOST, MQTT_USER, MQTT_PASS]):
