@@ -3,9 +3,10 @@ import asyncio
 import os
 import json
 import time
-from bleak import BleakClient, BleakScanner # <-- UPDATED: Changed 'discover' to 'BleakScanner'
+from bleak import BleakClient, BleakScanner
 from struct import unpack
 import paho.mqtt.client as mqtt
+from paho.mqtt.client import CallbackAPIVersion # <--- NEW IMPORT
 
 BASE_MQTT_TOPIC = "solar_inverter"
 DISCOVERY_PREFIX = "homeassistant"
@@ -112,7 +113,11 @@ async def main():
 
     # 2. MQTT Setup
     last_discovery_time = 0
-    client = mqtt.Client("SolarInv")
+    # UPDATED: Added callback_api_version=CallbackAPIVersion.VERSION2
+    client = mqtt.Client(
+        client_id="SolarInv",
+        callback_api_version=CallbackAPIVersion.VERSION2
+    )
     client.on_connect = on_connect
 
     try:
