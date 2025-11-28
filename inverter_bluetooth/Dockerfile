@@ -7,8 +7,9 @@ RUN apk add --no-cache python3 py3-pip bluez
 # Set up the working directory
 WORKDIR /app
 
-# Install Python dependencies directly
-RUN pip3 install bleak paho-mqtt
+# Install Python dependencies directly, using --break-system-packages to bypass
+# the PEP 668 "externally-managed-environment" error in the container.
+RUN pip3 install --break-system-packages bleak paho-mqtt
 
 # Copy your scripts into the container's app directory
 COPY inverter_reader.py run.sh /app/
